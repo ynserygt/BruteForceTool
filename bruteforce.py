@@ -16,6 +16,7 @@ parser.add_argument('--url', required=True, help='Hedef login sayfası URL')
 parser.add_argument('--combo', required=True, help='Combo wordlist dosyası (username:password)')
 parser.add_argument('--headless', action='store_true', help='Tarayıcıyı arka planda (görünmeden) çalıştır')
 args = parser.parse_args()
+args.url = args.url.strip()
 
 # Combo wordlisti oku (username:password)
 combos = []
