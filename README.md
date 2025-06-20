@@ -16,7 +16,8 @@ Selenium için ayrıca Chrome veya Firefox ve uygun WebDriver (ör: chromedriver
 
 ## Kullanım
 ```bash
-python3 bruteforce.py --url "https://hedefsite.com/login" --combo combo_wordlist.txt
+# SSL hatası alırsan --no-verify ekle
+python3 bruteforce.py --url "https://hedefsite.com/login" --combo combo_wordlist.txt --no-verify
 ```
 
 ## Notlar

