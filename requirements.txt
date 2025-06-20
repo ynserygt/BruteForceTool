@@ -1,6 +1,4 @@
-cloudscraper
-beautifulsoup4
-tqdm
 selenium
-requests
-colorama 
+webdriver-manager
+beautifulsoup4
+requests 
