@@ -1,4 +1,4 @@
-# --- AI SIGNATURE: DEBUG-COMPLETE-SCRIPT ---
+# --- AI SIGNATURE: JS-INPUT-FIX-SCRIPT ---
 import argparse
 import sys
 import time
@@ -118,8 +118,9 @@ try:
     print(f"[+] Login formu bulundu: user='{user_input.get_attribute('name')}', pass='{pass_input.get_attribute('name')}'")
 
     print("DEBUG: Başarısız giriş denemesiyle referans alınıyor...")
-    user_input.send_keys("wronguser")
-    pass_input.send_keys("wrongpass" + Keys.RETURN)
+    driver.execute_script("arguments[0].value = 'wronguser';", user_input)
+    driver.execute_script("arguments[0].value = 'wrongpass';", pass_input)
+    form.submit()
     time.sleep(3)
     fail_url = driver.current_url
     fail_html = driver.page_source
@@ -144,10 +145,12 @@ try:
                         pass_input = inp
 
                 if user_input and pass_input:
-                    user_input.clear()
-                    pass_input.clear()
-                    user_input.send_keys(username)
-                    pass_input.send_keys(password + Keys.RETURN)
+                    # GÜNCELLEME: JavaScript ile inputları doldur
+                    driver.execute_script("arguments[0].value = arguments[1];", user_input, username)
+                    driver.execute_script("arguments[0].value = arguments[1];", pass_input, password)
+                    
+                    # GÜNCELLEME: Formu submit et
+                    form.submit()
                     time.sleep(3)
 
                     if driver.current_url != fail_url or driver.page_source != fail_html:
@@ -182,4 +185,4 @@ finally:
     success_log.close()
     print("\n[+] Tarama tamamlandı.")
 
-# --- AI SIGNATURE: DEBUG-COMPLETE-SCRIPT-BITIS --- 
+# --- AI SIGNATURE: JS-INPUT-FIX-SCRIPT-BITIS --- 
