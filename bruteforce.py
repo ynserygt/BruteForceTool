@@ -147,4 +147,4 @@ try:
     if not success_count:
         print(Fore.YELLOW + "[!] Başarılı giriş bulunamadı.")
 finally:
-    success_log.close()
+    success_log.close() 
