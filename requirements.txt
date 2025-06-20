@@ -3,5 +3,4 @@ beautifulsoup4
 tqdm
 selenium
 requests
-colorama
-webdriver-manager 
+colorama 
