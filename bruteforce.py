@@ -112,7 +112,6 @@ except Exception as e:
     fail_status = 0
     fail_url = ""
 
-
 success_count = 0
 tried_count = 0
 success_log = open('success.txt', 'w', encoding='utf-8')
@@ -148,4 +147,4 @@ try:
     if not success_count:
         print(Fore.YELLOW + "[!] Başarılı giriş bulunamadı.")
 finally:
-    success_log.close() 
+    success_log.close()
